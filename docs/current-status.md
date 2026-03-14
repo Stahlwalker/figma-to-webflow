@@ -165,7 +165,30 @@ The ngrok URL goes in `designer-extension/.env` as `VITE_API_URL`. Must rebuild 
 - Min/max width/height constraints
 - Responsive behavior from Figma constraints
 
-### P4: Developer experience
+### P4: Consider Claude API as mapper (hybrid approach)
+
+The deterministic mapper handles basic cases but struggles with the edge cases Claude handled naturally in the artifact (nested components, mixed content, ambiguous structures). A hybrid approach could be the best of both worlds:
+
+**How it would work:**
+1. Backend fetches Figma JSON directly (already built, no rate limits)
+2. Send that JSON to Claude API in a single call: "convert this Figma node tree to a build plan"
+3. Claude returns the build plan → existing builder executes it in Webflow
+4. One API call per section, no MCP servers involved
+
+**Why this is better than the MCP artifact approach:**
+- No Figma MCP rate limits — we fetch Figma JSON directly via REST API
+- No Webflow MCP rate limits — we use the Designer API directly
+- Claude only does the translation (Figma JSON → build plan), not the reading/writing
+- A section's Figma JSON is ~10-20K tokens in, ~2-5K tokens out → a few cents per section
+
+**Options:**
+- **Replace** the deterministic mapper entirely with Claude API — simpler code, handles all edge cases
+- **Augment** — use deterministic mapper for the 80% straightforward cases, Claude API as fallback for complex layouts/components
+- **Keep deterministic only** — no API cost, fully predictable, but more code to maintain for edge cases
+
+Would need a Claude API key (Anthropic API). Implementation: one new route in data-client (`/api/mapper/build-plan-ai`) that calls the Anthropic SDK instead of the deterministic mapper functions.
+
+### P5: Developer experience
 - Watch mode (`nodemon` or `chokidar`) that auto-builds on file changes
 - Better error messages in the UI
 - Remove debug `console.log` and `console.warn` statements
@@ -187,6 +210,87 @@ The ngrok URL goes in `designer-extension/.env` as `VITE_API_URL`. Must rebuild 
 | `data-client/lib/mapper/fills.ts` | Fills → background-color |
 | `data-client/lib/figma/client.ts` | Figma REST API client (`X-Figma-Token` header) |
 | `data-client/lib/figma/parser.ts` | Extracts sections from Figma file structure |
+
+## Deployment
+
+### Current: Local development only
+
+Everything runs locally with ngrok tunneling. This works but requires 3 terminal windows and a manual rebuild cycle.
+
+### Production target: Vercel + Webflow App Store
+
+The goal is a standalone app that anyone can install from the Webflow App Marketplace — no local setup, no tokens, just connect and build.
+
+### Architecture in production
+
+```
+Webflow Designer (browser)
+┌──────────────────────────────────┐
+│  Designer Extension              │
+│  (static files on Vercel/CDN)    │
+│  ─── calls backend via HTTPS ──────┐
+└──────────────────────────────────┘  │
+                                      ▼
+                              ┌──────────────────┐
+                              │  Data Client      │
+                              │  (Vercel/Node.js) │
+                              │  ─ Figma REST API │
+                              │  ─ Claude API     │
+                              │  ─ Webflow OAuth  │
+                              └──────────────────┘
+```
+
+### Step-by-step deployment
+
+**1. Deploy data-client to Vercel**
+- Connect the GitHub repo
+- Set root directory to `data-client`
+- Framework preset: Next.js
+- Add environment variables in Vercel dashboard:
+  - `FIGMA_CLIENT_ID`, `FIGMA_CLIENT_SECRET`
+  - `WEBFLOW_CLIENT_ID`, `WEBFLOW_CLIENT_SECRET`
+  - `SESSION_SECRET` (generate with `openssl rand -hex 32`)
+  - `NEXT_PUBLIC_APP_URL` → the Vercel deployment URL
+  - `ANTHROPIC_API_KEY` (if using Claude API hybrid mapper)
+
+**2. Deploy designer-extension as static site**
+
+Option A: Vercel
+- Set root directory to `designer-extension`
+- Build command: `npm run build`
+- Output directory: `dist`
+- Add env: `VITE_API_URL` → data-client Vercel URL
+
+Option B: Cloudflare Pages (free, fast CDN)
+- Connect repo, set build output to `designer-extension/dist`
+- Same `VITE_API_URL` env var
+
+**3. Update Webflow App settings**
+- In the Webflow Developer dashboard, update the Designer Extension URL to the deployed static site URL
+- Update OAuth callback URLs to point to the Vercel data-client URL
+- No more ngrok needed
+
+**4. Update Figma App settings**
+- OAuth callback URL → `https://<data-client>.vercel.app/api/auth/figma/callback`
+- Must get Figma OAuth unblocked (see "Figma Auth" section above)
+
+**5. Submit to Webflow App Marketplace (optional)**
+- Once stable, submit for review to make it installable by any Webflow user
+- Requires app description, screenshots, privacy policy
+
+### What changes for deployment vs local dev
+
+| Concern | Local (now) | Production |
+|---------|------------|------------|
+| HTTPS | ngrok tunnel | Vercel handles it |
+| Designer API injection | `webflow extension serve` | Webflow injects automatically when served from registered URL |
+| Figma auth | Personal access token | OAuth (needs org approval) |
+| Backend URL | ngrok URL in `.env` | Vercel URL, set once |
+| Rebuilds | Manual `npm run build` | Auto-deploy on git push |
+| Cost | Free | Free tier covers it (Vercel free, Figma API free, Claude API ~cents/use) |
+
+### Key prerequisite: Figma OAuth must work
+The personal access token approach is a dev workaround. For a real deployed app, users need OAuth. This is blocked by org-level Figma settings — see the "Figma Auth" section above for how to unblock.
 
 ## Mapper Coverage
 
