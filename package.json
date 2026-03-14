@@ -1,0 +1,8 @@
+{
+  "name": "figma-to-webflow",
+  "private": true,
+  "workspaces": [
+    "data-client",
+    "designer-extension"
+  ]
+}

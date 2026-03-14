@@ -1,0 +1,6 @@
+{
+  "name": "Figma to Webflow",
+  "apiVersion": "2",
+  "size": "large",
+  "publicDir": "dist"
+}
